@@ -517,6 +517,15 @@ enum gb_serial_rx_ret_e
  */
 struct gb_s
 {
+	/* PicOS: direct ROM/cart-RAM pointers.  When `rom` is non-NULL the hot
+	 * memory paths in __gb_read/__gb_write bypass the front-end callbacks
+	 * and index these arrays directly — a large win on RP2350 where every
+	 * callback is an indirect call into PSRAM-resident code. */
+	const uint8_t *rom;
+	uint32_t rom_size;
+	uint8_t *cart_ram_data;
+	uint32_t cart_ram_data_size;
+
 	/**
 	 * Return byte from ROM at given address.
 	 *
@@ -762,17 +771,24 @@ uint8_t __gb_read(struct gb_s *gb, uint16_t addr)
 	case 0x1:
 	case 0x2:
 	case 0x3:
+		if(gb->rom)
+			return (addr < gb->rom_size) ? gb->rom[addr] : 0xFF;
 		return gb->gb_rom_read(gb, addr);
 
 	case 0x4:
 	case 0x5:
 	case 0x6:
 	case 0x7:
+	{
+		uint_fast32_t rom_addr;
 		if(gb->mbc == 1 && gb->cart_mode_select)
-			return gb->gb_rom_read(gb,
-					       addr + ((gb->selected_rom_bank & 0x1F) - 1) * ROM_BANK_SIZE);
+			rom_addr = addr + ((gb->selected_rom_bank & 0x1F) - 1) * ROM_BANK_SIZE;
 		else
-			return gb->gb_rom_read(gb, addr + (gb->selected_rom_bank - 1) * ROM_BANK_SIZE);
+			rom_addr = addr + (gb->selected_rom_bank - 1) * ROM_BANK_SIZE;
+		if(gb->rom)
+			return (rom_addr < gb->rom_size) ? gb->rom[rom_addr] : 0xFF;
+		return gb->gb_rom_read(gb, rom_addr);
+	}
 
 	case 0x8:
 	case 0x9:
@@ -789,20 +805,24 @@ uint8_t __gb_read(struct gb_s *gb, uint16_t addr)
 		}
 		else if(gb->cart_ram && gb->enable_cart_ram)
 		{
+			uint_fast32_t ram_addr;
 			if(gb->mbc == 2)
 			{
 				/* Only 9 bits are available in address. */
-				addr &= 0x1FF;
-				return gb->gb_cart_ram_read(gb, addr);
+				ram_addr = addr & 0x1FF;
 			}
 			else if((gb->cart_mode_select || gb->mbc != 1) &&
 					gb->cart_ram_bank < gb->num_ram_banks)
 			{
-				return gb->gb_cart_ram_read(gb, addr - CART_RAM_ADDR +
-							    (gb->cart_ram_bank * CRAM_BANK_SIZE));
+				ram_addr = addr - CART_RAM_ADDR +
+					   (gb->cart_ram_bank * CRAM_BANK_SIZE);
 			}
 			else
-				return gb->gb_cart_ram_read(gb, addr - CART_RAM_ADDR);
+				ram_addr = addr - CART_RAM_ADDR;
+			if(gb->cart_ram_data)
+				return (ram_addr < gb->cart_ram_data_size)
+					? gb->cart_ram_data[ram_addr] : 0xFF;
+			return gb->gb_cart_ram_read(gb, ram_addr);
 		}
 
 		return 0xFF;
@@ -1018,16 +1038,30 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 				addr &= 0x1FF;
 				/* Data is only 4 bits wide in MBC2 RAM. */
 				val &= 0x0F;
-				gb->gb_cart_ram_write(gb, addr, val);
+				if(gb->cart_ram_data) {
+					if(addr < gb->cart_ram_data_size)
+						gb->cart_ram_data[addr] = val;
+				} else
+					gb->gb_cart_ram_write(gb, addr, val);
 			}
 			else if(gb->cart_mode_select &&
 					gb->cart_ram_bank < gb->num_ram_banks)
 			{
-				gb->gb_cart_ram_write(gb,
-						      addr - CART_RAM_ADDR + (gb->cart_ram_bank * CRAM_BANK_SIZE), val);
+				uint_fast32_t ram_addr = addr - CART_RAM_ADDR +
+					(gb->cart_ram_bank * CRAM_BANK_SIZE);
+				if(gb->cart_ram_data) {
+					if(ram_addr < gb->cart_ram_data_size)
+						gb->cart_ram_data[ram_addr] = val;
+				} else
+					gb->gb_cart_ram_write(gb, ram_addr, val);
 			}
-			else if(gb->num_ram_banks)
-				gb->gb_cart_ram_write(gb, addr - CART_RAM_ADDR, val);
+			else if(gb->num_ram_banks) {
+				if(gb->cart_ram_data) {
+					if((uint_fast32_t)(addr - CART_RAM_ADDR) < gb->cart_ram_data_size)
+						gb->cart_ram_data[addr - CART_RAM_ADDR] = val;
+				} else
+					gb->gb_cart_ram_write(gb, addr - CART_RAM_ADDR, val);
+			}
 		}
 
 		return;
