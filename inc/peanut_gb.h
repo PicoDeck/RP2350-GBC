@@ -517,7 +517,7 @@ enum gb_serial_rx_ret_e
  */
 struct gb_s
 {
-	/* PicOS: direct ROM/cart-RAM pointers.  When `rom` is non-NULL the hot
+	/* PicoDeck: direct ROM/cart-RAM pointers.  When `rom` is non-NULL the hot
 	 * memory paths in __gb_read/__gb_write bypass the front-end callbacks
 	 * and index these arrays directly — a large win on RP2350 where every
 	 * callback is an indirect call into PSRAM-resident code. */
